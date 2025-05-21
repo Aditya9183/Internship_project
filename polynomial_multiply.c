@@ -29,10 +29,29 @@ int main(){
     for(int i = 0;i<=dega;i++){
         scanf("%d",&A[i]);
     }
+
+    printf("enter the degree of second polynomial: ");
+    scanf("%d", &degb);
+    int *B = (int *)malloc((degb + 1) * sizeof(int));
+
+    printf("enter the coefficients from ascending order: ");
+    for(int i = 0;i<=degb;i++){
+        scanf("%d",&B[i]);
+    }
+
+    int *result = (int *)calloc(dega + degb + 1,sizeof(int));
+    multiply_poly(A,B,dega,degb,result);
+
     print_poly(A,dega);
+    print_poly(B,degb);
+    print_poly(result,dega + degb);
+    
+    
 
 
 
     free(A);
+    free(B);
+    free(result);
     return 0;
 }
