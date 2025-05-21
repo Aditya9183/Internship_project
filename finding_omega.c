@@ -21,6 +21,18 @@ int primitive_check (int omega , int n , int q){
     return 1;
 }
 
+int omega_find(int n,int q){
+    if((q-1)%n != 0){
+        return 0;
+    }
+    for(int omega = 2;omega<q;omega++){
+        if(primitive_check(omega,n,q)){
+            return omega;
+        }
+
+    }
+
+}
 int main(){
     int n,q;
 
@@ -30,17 +42,9 @@ int main(){
     printf("enter the modulus:");
     scanf("%d",&q);
 
-    if((q-1)%n != 0){
-        printf("nth root of unity does not exist\n");
-        return 0;
-    }
-    for(int omega = 2;omega<q;omega++){
-        if(primitive_check(omega,n,q)){
-            printf("the primitive nth root is %d\n",omega);
-            return 0;
-        }
-
-    }
-    printf("no primitve root found\n");
+    int ans = omega_find(n,q);
+    printf("%d",ans);
+    
+    
     return 0;
 }
