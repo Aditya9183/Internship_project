@@ -1,0 +1,372 @@
+`timescale 1ns / 1ps
+module ntt_intt (
+    input clk,
+    input rst,
+    input start,
+    output reg done_final,
+
+    // Dual-port BRAMs
+    output reg [7:0] coeff_addr0_a,
+    output reg [7:0] coeff_addr0_b,
+    output reg [7:0] coeff_addr1_a,
+    output reg [7:0] coeff_addr1_b,
+    input  [31:0] coeff0_dout_a,
+    input  [31:0] coeff0_dout_b,
+    input  [31:0] coeff1_dout_a,
+    input  [31:0] coeff1_dout_b,
+
+    //output reg [31:0] coeff_write_addr,
+    output reg [31:0] coeff_din0,
+    coeff_din1,coeff_din2,coeff_din3,
+    output reg coeff_we,
+
+    // Twiddle ROM
+    output reg [7:0] twid_rom_addr1,
+    twid_rom_addr2,twid_rom_addr3,
+    input  [31:0] twid_rom_data1,
+    twid_rom_data2,twid_rom_data3,
+    
+    
+
+    // Address ROMs
+    output reg [7:0] addr_rom_addr0,
+    addr_rom_addr1,
+    addr_rom_addr2,
+    addr_rom_addr3,
+    input  [7:0] addr0, addr1, addr2, addr3
+);
+
+parameter Q = 7681;
+parameter STAGES = 2;
+parameter N = 16;
+parameter N_INV = 7201;
+
+
+localparam [4:0] IDLE=0,
+           FETCH_ADDR=1, 
+           WAIT1=2,
+           READ_COEFF=3,
+           WAIT2=4,
+           LOAD_COEFF=5,
+           TWID=6, 
+           WAIT_COMPUTE=7,
+           COMPUTE1=8,
+           COMPUTE2=9,
+           COMPUTE3=10,
+           WAIT_WRITE=11,
+           WRITE=12,
+           UPDATE_ADDR1 = 13,
+           WAIT_UPDATE = 14,
+           UPDATE_BOTH = 15,
+           NEXT=16,
+           FINAL=17,
+           FINAL_WAIT=18, 
+           FINAL_COMPUTE=19,
+           WAIT_SHOW = 20,
+           SHOW = 21,
+           WAIT_UPDATE1 = 22,
+           UPDATE_ADDR2 = 23,
+           WAIT_UPDATE2 = 24,
+           UPDATE_ADDR = 25,
+           LOAD_FINAL = 26,
+           WAIT_FINAL = 27,
+           DONE_INTT = 28,
+           WAIT_FINAL1 = 29;
+           
+//temp addr for updating both the brams
+reg [7:0] taddr_1,taddr_2,taddr_3,taddr_4;
+reg [4:0] state;
+reg [3:0] stage, group, bfu;
+reg [3:0] num_stage,num_group,num_bfu;
+reg [7:0] final_index;
+//temp twiddle addr for intt
+reg [7:0] taddr1,taddr2,taddr3;
+reg [31:0] a0, a1, a2, a3;
+reg [31:0] w1, w2, w3;
+reg [31:0] t0, t1, t2, t3;
+reg mode;
+reg done_ntt;
+
+reg [15:0] out0, out1, out2, out3;
+
+// modular helpers
+function [15:0] modadd;
+  input [15:0] a, b; 
+  begin 
+    modadd = (a + b) % Q; 
+  end
+endfunction
+
+function [15:0] modsub;
+  input [15:0] a, b; 
+  begin 
+    modsub = (a >= b) ? (a - b) : (Q + a - b);
+  end
+endfunction
+function [15:0] modmul;
+  input [15:0] a, b; reg [31:0] tmp;
+  begin 
+    tmp = a * b; modmul = tmp % Q; 
+  end
+endfunction
+
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        state <= IDLE;
+        stage <= 0; 
+        group <= 0;
+        bfu <= 0;
+        done_final <= 0;
+        mode<=0;
+        done_ntt<=0;
+        coeff_we <= 0;
+        addr_rom_addr0 <= 0;
+        addr_rom_addr1 <= 0;
+        addr_rom_addr2 <= 0;
+        addr_rom_addr3 <= 0;
+        
+    end else begin
+        case(state)
+        IDLE: begin
+            if (start) begin
+                stage <= 0;
+                group <= 0;
+                bfu <= 0;
+                addr_rom_addr0 <= 0;
+                addr_rom_addr1 <= 1;
+                addr_rom_addr2 <= 2;
+                addr_rom_addr3 <= 3;
+                twid_rom_addr1<= 0;
+                twid_rom_addr2<= 1;
+                twid_rom_addr3<= 2;
+                state <= FETCH_ADDR;
+                num_stage<=STAGES;
+                stage<=0;
+                num_group<=1;
+                group<=0;
+                num_bfu<=4;
+                bfu<=0;
+                
+            end
+        end
+        FETCH_ADDR: begin
+            state <= WAIT1;
+        end
+        WAIT1: state <= READ_COEFF;
+
+        READ_COEFF: begin
+            coeff_addr0_a <= addr0; coeff_addr0_b <= addr1;
+            coeff_addr1_a <= addr2; coeff_addr1_b <= addr3;
+            taddr_1 <= addr0; taddr_2 <= addr1;
+            taddr_3 <= addr2; taddr_4 <= addr3;
+            addr_rom_addr0<=addr_rom_addr0+4;
+            addr_rom_addr1<=addr_rom_addr1+4;
+            addr_rom_addr2<=addr_rom_addr2+4;
+            addr_rom_addr3<=addr_rom_addr3+4;
+            state <= WAIT2;
+        end
+        WAIT2: begin
+            state<=LOAD_COEFF;
+        end
+        LOAD_COEFF:begin
+        // Load coefficients from 2 BRAMs
+            a0 <= coeff0_dout_a;
+            a1 <= coeff0_dout_b;
+            a2 <= coeff1_dout_a;
+            a3 <= coeff1_dout_b;
+            state <= TWID;
+        end
+        
+        TWID: begin
+        // loading the twiddle factors
+            w1 <= twid_rom_data1;
+            w2 <= twid_rom_data2;
+            w3 <= twid_rom_data3;
+            state <= WAIT_COMPUTE;
+        end
+        WAIT_COMPUTE:begin
+            state<=COMPUTE1;
+        end
+        
+        COMPUTE1: begin
+            if(!mode)begin
+                a1 <= modmul(a1, w1);
+                a2 <= modmul(a2, w2);
+                a3 <= modmul(a3, w3);
+            end
+            state<=COMPUTE2;
+        end
+        COMPUTE2:begin
+            t0 <= modadd(a0, a2);
+            t1 <= modadd(a1, a3);
+            t2 <= modsub(a0, a2);
+            t3 <= modsub(a1, a3);
+            state<=COMPUTE3;
+        end
+        COMPUTE3:begin
+            if (mode) begin
+                out0 <= modadd(t0, t1);
+                out1 <= modmul(modadd(t2, t3),w1);
+                out2 <= modmul(modsub(t0, t1),w2);
+                out3 <=modmul(modsub(t2, t3),w3);
+            end
+            else begin
+                out0 <= modadd(t0, t1);
+                out1 <= modadd(t2, t3);
+                out2 <= modsub(t0, t1);
+                out3 <= modsub(t2, t3);
+            end
+            state <= WAIT_WRITE;
+        end
+        
+        WAIT_WRITE:begin
+            state<=WRITE;
+        end
+        WRITE: begin
+            // Write back
+            coeff_we<=1;
+            coeff_din0<=out0;
+            coeff_din1<=out1;
+            coeff_din2<=out2;
+            coeff_din3<=out3;
+            state <= WAIT_UPDATE1;
+        end
+        WAIT_UPDATE1:begin
+            state<=WAIT_UPDATE2;
+        end
+        WAIT_UPDATE2:begin
+            state<=UPDATE_ADDR1;
+        end
+        UPDATE_ADDR1:begin
+            coeff_we<=0;
+            coeff_addr0_a <= taddr_3; coeff_addr0_b <= taddr_4;
+            coeff_addr1_a <= taddr_1; coeff_addr1_b <= taddr_2;
+            state<=WAIT_UPDATE;
+        end
+        WAIT_UPDATE:begin
+           state<=UPDATE_BOTH;
+        end
+        UPDATE_BOTH:begin
+            coeff_we<=1;
+            coeff_din0<=out2;
+            coeff_din1<=out3;
+            coeff_din2<=out0;
+            coeff_din3<=out1;
+            state<=NEXT;
+        end
+        UPDATE_ADDR2:begin
+            coeff_addr0_a <= taddr_1; coeff_addr0_b <= taddr_2;
+            coeff_addr1_a <= taddr_3; coeff_addr1_b <= taddr_4;
+            state<=NEXT;
+        end
+        NEXT: begin
+            coeff_we<=0;
+            if(bfu==num_bfu-1)begin
+                bfu<=0;
+                if(group==num_group-1)begin
+                    group<=0;
+                    if(stage==num_stage-1)begin
+                        if(mode)begin 
+                            coeff_addr0_a <= 0; coeff_addr0_b <= 1;
+                            coeff_addr1_a <= 2; coeff_addr1_b <=3;
+                            state<=WAIT_SHOW;
+                        end
+                        else begin
+                            mode<=1;
+                            stage<=0;
+                            group<=0;
+                            bfu<=0;
+                            done_ntt<=1;
+                            num_stage<=STAGES;
+                            num_bfu<=1;
+                            num_group<=4;
+                            twid_rom_addr1<= twid_rom_addr1+3;
+                            twid_rom_addr2<= twid_rom_addr2+3;
+                            twid_rom_addr3<= twid_rom_addr3+3;
+                            taddr1<= twid_rom_addr1+3;
+                            taddr2<= twid_rom_addr2+3;
+                            taddr3<= twid_rom_addr3+3;
+                            state<=FETCH_ADDR;
+                        end
+                        
+                    end
+                    
+                    else begin
+                        if(mode)begin
+                            twid_rom_addr1<= taddr1;
+                            twid_rom_addr2<=taddr2;
+                            twid_rom_addr3<=taddr3;
+                            stage<=stage+1;
+                            num_bfu<=num_bfu<<2;
+                            num_group<=num_group>>2;
+                        end
+                        else begin
+                            twid_rom_addr1<= 0;
+                            twid_rom_addr2<= 1;
+                            twid_rom_addr3<= 2;
+                            stage<=stage+1;
+                            num_bfu<=num_bfu>>2;
+                            num_group<=num_group<<2;
+                        end
+                        state<=FETCH_ADDR;
+                    end
+                end
+                else begin
+                    group<=group+1;
+                    twid_rom_addr1<= twid_rom_addr1+3;
+                    twid_rom_addr2<= twid_rom_addr2+3;
+                    twid_rom_addr3<= twid_rom_addr3+3;
+                    state<=FETCH_ADDR;
+                end
+                
+            end
+            else begin
+                bfu<=bfu+1;
+                state<=FETCH_ADDR;
+            end
+        end
+        WAIT_SHOW:begin
+            state<=LOAD_FINAL;
+            
+        end
+        LOAD_FINAL:begin
+            out0<=coeff0_dout_a;
+            out1<=coeff0_dout_b;
+            out2<=coeff1_dout_a;
+            out3<=coeff1_dout_b;
+            state<=SHOW;
+        end
+        SHOW:begin
+            coeff_we<=1;
+            coeff_din0<=modmul(out0,N_INV);
+            coeff_din1<=modmul(out1,N_INV);
+            coeff_din2<=modmul(out2,N_INV);
+            coeff_din3<=modmul(out3,N_INV);
+            if(coeff_addr1_b == 15)begin
+                state<=DONE_INTT;
+            end
+            else begin
+                state<=WAIT_FINAL;
+            end
+        end
+        WAIT_FINAL:begin
+            state<=WAIT_FINAL1;
+        end
+        WAIT_FINAL1:begin
+            state<=UPDATE_ADDR;
+        end
+        UPDATE_ADDR:begin
+                coeff_we<=0;
+                coeff_addr0_a <= coeff_addr0_a+4; coeff_addr0_b <= coeff_addr0_b+4;
+                coeff_addr1_a <= coeff_addr1_a+4; coeff_addr1_b <=coeff_addr1_b+4;
+                state<=WAIT_SHOW;
+        end
+        DONE_INTT:begin
+            coeff_we<=0;
+            done_final<=1;
+            state<=0;
+        end  
+        endcase
+    end
+end
+endmodule
